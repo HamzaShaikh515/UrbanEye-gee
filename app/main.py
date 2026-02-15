@@ -7,7 +7,9 @@ from app.database import SessionLocal
 from app.models import AnalysisResult
 
 from geoalchemy2.shape import from_shape
-from shapely.geometry import Point
+from shapely.geometry import Point, shape
+
+from typing import Dict, Optional
 
 app = FastAPI()
 
@@ -21,9 +23,11 @@ app.add_middleware(
 
 
 class AreaRequest(BaseModel):
-    lat: float
-    lon: float
-    radius: int
+    lat: Optional[float] = None
+    lon: Optional[float] = None
+    radius: Optional[int] = None
+    polygon: Optional[Dict] = None
+
     date1_start: str
     date1_end: str
     date2_start: str
@@ -40,20 +44,25 @@ def analyze(request: AreaRequest):
         request.date1_start,
         request.date1_end,
         request.date2_start,
-        request.date2_end
+        request.date2_end,
+        request.polygon
     )
 
     db = SessionLocal()
 
-    point = from_shape(Point(request.lon, request.lat), srid=4326)
+    if request.polygon:
+        shapely_geom = shape(request.polygon)
+    elif request.lat is not None and request.lon is not None:
+        shapely_geom = Point(request.lon, request.lat)
+    else:
+        raise ValueError("Either polygon or lat/lon must be provided")
+
+    db_geom = from_shape(shapely_geom, srid=4326)
 
     db_result = AnalysisResult(
-        latitude=request.lat,
-        longitude=request.lon,
-        radius=request.radius,
         encroachment_percent=result["encroachment_percent"],
         risk_level=result["risk_level"],
-        location=point
+        area_geom=db_geom
     )
 
     db.add(db_result)

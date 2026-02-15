@@ -21,10 +21,19 @@ def calculate_ndbi(image):
     return image.normalizedDifference(['B11', 'B8']).rename('NDBI')
 
 
-def analyze_area(lat, lon, radius, d1_start, d1_end, d2_start, d2_end):
+def analyze_area(lat, lon, radius, d1_start, d1_end, d2_start, d2_end, polygon=None):
 
-    point = ee.Geometry.Point([lon, lat])
-    area = point.buffer(radius)
+    if polygon is not None:
+        # Only support GeoJSON Polygons
+        if polygon.get("type") != "Polygon":
+            raise ValueError("Only Polygon type is supported")
+
+        coords = polygon["coordinates"]
+        # Build Earth Engine Geometry Polygon
+        area = ee.Geometry.Polygon(coords)
+    else:
+        point = ee.Geometry.Point([lon, lat])
+        area = point.buffer(radius)
 
     image1 = get_best_image(area, d1_start, d1_end)
     image2 = get_best_image(area, d2_start, d2_end)
