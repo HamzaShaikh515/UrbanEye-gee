@@ -1,6 +1,11 @@
 import ee
+import os
+from dotenv import load_dotenv
 
-ee.Initialize(project="urbaneye-477115")
+load_dotenv()
+
+GEE_PROJECT_ID = os.getenv("GEE_PROJECT_ID")
+ee.Initialize(project=GEE_PROJECT_ID)
 
 def get_best_image(area, start_date, end_date):
 
