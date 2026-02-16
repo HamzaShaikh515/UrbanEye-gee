@@ -1,9 +1,8 @@
 # ==========================
 # Python
 # ==========================
-__pycache__/
-*.py[cod]
-*$py.class
+*/__pycache__/
+*.pyc
 
 # Virtual environments
 .venv/
@@ -61,3 +60,6 @@ pgdata/
 # Temporary files
 *.tmp
 *.swp
+
+# Reports
+reports/
