@@ -2,15 +2,22 @@ import ee
 
 ee.Initialize(project="urbaneye-477115")
 
-def get_best_image(area, start, end):
+def get_best_image(area, start_date, end_date):
+
     collection = (
-        ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED')
+        ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
         .filterBounds(area)
-        .filterDate(start, end)
-        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 5))
-        .sort('CLOUDY_PIXEL_PERCENTAGE')
+        .filterDate(start_date, end_date)
+        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 40))  # increase threshold
     )
-    return collection.first().clip(area)
+
+    count = collection.size().getInfo()
+
+    if count == 0:
+        raise ValueError(f"No Sentinel-2 images found between {start_date} and {end_date}")
+
+    return collection.median()
+
 
 
 def calculate_ndvi(image):
@@ -23,21 +30,28 @@ def calculate_ndbi(image):
 
 def analyze_area(lat, lon, radius, d1_start, d1_end, d2_start, d2_end, polygon=None):
 
+    # ----------------------------
+    # 1️⃣ Create AOI Geometry
+    # ----------------------------
     if polygon is not None:
-        # Only support GeoJSON Polygons
         if polygon.get("type") != "Polygon":
             raise ValueError("Only Polygon type is supported")
 
         coords = polygon["coordinates"]
-        # Build Earth Engine Geometry Polygon
         area = ee.Geometry.Polygon(coords)
     else:
         point = ee.Geometry.Point([lon, lat])
         area = point.buffer(radius)
 
+    # ----------------------------
+    # 2️⃣ Get Images
+    # ----------------------------
     image1 = get_best_image(area, d1_start, d1_end)
     image2 = get_best_image(area, d2_start, d2_end)
 
+    # ----------------------------
+    # 3️⃣ Calculate Indices
+    # ----------------------------
     ndvi1 = calculate_ndvi(image1)
     ndvi2 = calculate_ndvi(image2)
 
@@ -47,11 +61,22 @@ def analyze_area(lat, lon, radius, d1_start, d1_end, d2_start, d2_end, polygon=N
     ndvi_change = ndvi2.subtract(ndvi1)
     ndbi_change = ndbi2.subtract(ndbi1)
 
+    # ----------------------------
+    # 4️⃣ Create Masks
+    # ----------------------------
     veg_loss = ndvi_change.lt(-0.2)
     builtup_gain = ndbi_change.gt(0.2)
 
-    encroachment = veg_loss.And(builtup_gain)
+    encroachment_mask = veg_loss.And(builtup_gain)
 
+    # 🔥 IMPORTANT: Mask + Clip
+    veg_loss = veg_loss.updateMask(veg_loss).clip(area)
+    builtup_gain = builtup_gain.updateMask(builtup_gain).clip(area)
+    encroachment = encroachment_mask.updateMask(encroachment_mask).clip(area)
+
+    # ----------------------------
+    # 5️⃣ Area Calculation
+    # ----------------------------
     pixel_area = ee.Image.pixelArea()
 
     total_area = pixel_area.reduceRegion(
@@ -68,7 +93,7 @@ def analyze_area(lat, lon, radius, d1_start, d1_end, d2_start, d2_end, polygon=N
         maxPixels=1e10
     ).getInfo()['area']
 
-    percent = (encroach_area / total_area) * 100
+    percent = (encroach_area / total_area) * 100 if total_area else 0
 
     if percent < 5:
         risk = "Low"
@@ -77,17 +102,31 @@ def analyze_area(lat, lon, radius, d1_start, d1_end, d2_start, d2_end, polygon=N
     else:
         risk = "High"
 
-    # Generate Tile Layers
-    veg_loss_tile = veg_loss.selfMask().getMapId(
-        {'palette': ['red']}
+    # ----------------------------
+    # 6️⃣ Generate Tile Layers
+    # ----------------------------
+    veg_loss_tile = veg_loss.getMapId(
+        {
+            'min': 0,
+            'max': 1,
+            'palette': ['red']
+        }
     )['tile_fetcher'].url_format
 
-    builtup_tile = builtup_gain.selfMask().getMapId(
-        {'palette': ['purple']}
+    builtup_tile = builtup_gain.getMapId(
+        {
+            'min': 0,
+            'max': 1,
+            'palette': ['purple']
+        }
     )['tile_fetcher'].url_format
 
-    encroach_tile = encroachment.selfMask().getMapId(
-        {'palette': ['orange']}
+    encroach_tile = encroachment.getMapId(
+        {
+            'min': 0,
+            'max': 1,
+            'palette': ['orange']
+        }
     )['tile_fetcher'].url_format
 
     return {
