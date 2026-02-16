@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from fastapi import HTTPException
 
 from app.engine import analyze_area
 from app.database import SessionLocal
@@ -10,6 +11,11 @@ from geoalchemy2.shape import from_shape
 from shapely.geometry import Point, shape
 
 from typing import Dict, Optional
+
+from fastapi.responses import FileResponse
+import os
+
+from app.report_utils import download_and_save_image, generate_pdf_report
 
 app = FastAPI()
 
@@ -59,6 +65,7 @@ def analyze(request: AreaRequest):
 
     db_geom = from_shape(shapely_geom, srid=4326)
 
+    # Save DB row first
     db_result = AnalysisResult(
         encroachment_percent=result["encroachment_percent"],
         risk_level=result["risk_level"],
@@ -68,6 +75,54 @@ def analyze(request: AreaRequest):
     db.add(db_result)
     db.commit()
     db.refresh(db_result)
+
+    analysis_id = db_result.id
+
+    # -------------------------
+    # Generate report folder
+    # -------------------------
+    folder = f"reports/{analysis_id}"
+    os.makedirs(folder, exist_ok=True)
+
+    # Download thumbnails once
+    t0_path = download_and_save_image(result["t0_thumb"], folder, "t0.png")
+    t1_path = download_and_save_image(result["t1_thumb"], folder, "t1.png")
+    enc_path = download_and_save_image(result["encroach_thumb"], folder, "encroachment.png")
+
+    # Generate PDF
+    pdf_path = generate_pdf_report(folder, result)
+
+    # Update DB with file paths
+    db_result.report_path = pdf_path
+    db_result.t0_image_path = t0_path
+    db_result.t1_image_path = t1_path
+    db_result.enc_image_path = enc_path
+
+    db.commit()
     db.close()
 
-    return result
+    return {
+        **result,
+        "report_id": analysis_id
+    }
+
+@app.get("/report/{report_id}")
+def download_report(report_id: int):
+
+    db = SessionLocal()
+
+    report = db.query(AnalysisResult).filter(
+        AnalysisResult.id == report_id
+    ).first()
+
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    db.close()
+
+    return FileResponse(
+        report.report_path,
+        media_type="application/pdf",
+        filename=f"urbaneye_report_{report_id}.pdf"
+    )
+

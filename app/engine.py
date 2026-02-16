@@ -129,10 +129,40 @@ def analyze_area(lat, lon, radius, d1_start, d1_end, d2_start, d2_end, polygon=N
         }
     )['tile_fetcher'].url_format
 
+    # True color images
+    true_color1 = image1.select(['B4', 'B3', 'B2']).clip(area)
+    true_color2 = image2.select(['B4', 'B3', 'B2']).clip(area)
+
+    t0_thumb = get_thumbnail(true_color1, area)
+    t1_thumb = get_thumbnail(true_color2, area)
+    encroach_thumb = get_thumbnail(encroachment, area, palette=['orange'])
+
+
     return {
         "encroachment_percent": round(percent, 2),
         "risk_level": risk,
         "vegetation_loss_tile": veg_loss_tile,
         "builtup_increase_tile": builtup_tile,
-        "encroachment_tile": encroach_tile
+        "encroachment_tile": encroach_tile,
+        "t0_thumb": t0_thumb,
+        "t1_thumb": t1_thumb,
+        "encroach_thumb": encroach_thumb
     }
+
+def get_thumbnail(image, area, palette=None):
+    vis_params = {
+        'min': 0,
+        'max': 3000,
+        'dimensions': 512,
+        'region': area
+    }
+
+    if palette:
+        vis_params.update({
+            'min': 0,
+            'max': 1,
+            'palette': palette
+        })
+
+    url = image.getThumbURL(vis_params)
+    return url
