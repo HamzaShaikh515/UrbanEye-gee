@@ -42,7 +42,14 @@ def analyze_area(lat, lon, radius, d1_start, d1_end, d2_start, d2_end, polygon=N
     else:
         point = ee.Geometry.Point([lon, lat])
         area = point.buffer(radius)
+    
+    # ---------------------------
+    # Create square bounding box
+    # ---------------------------
+    bounds = area.bounds()
 
+    # Add padding (meters)
+    buffered_bounds = bounds.buffer(500).bounds()
     # ----------------------------
     # 2️⃣ Get Images
     # ----------------------------
@@ -133,10 +140,53 @@ def analyze_area(lat, lon, radius, d1_start, d1_end, d2_start, d2_end, polygon=N
     true_color1 = image1.select(['B4', 'B3', 'B2']).clip(area)
     true_color2 = image2.select(['B4', 'B3', 'B2']).clip(area)
 
-    t0_thumb = get_thumbnail(true_color1, area)
-    t1_thumb = get_thumbnail(true_color2, area)
-    encroach_thumb = get_thumbnail(encroachment, area, palette=['orange'])
+    rgb_vis = {
+        'min': 0,
+        'max': 3000
+    }
 
+    aoi_outline = ee.Image().byte().paint(
+        ee.FeatureCollection([ee.Feature(buffered_bounds)]),
+        1,
+        3
+    )
+    t0_vis = image1.select(['B4','B3','B2']).visualize(**rgb_vis)
+    t1_vis = image2.select(['B4','B3','B2']).visualize(**rgb_vis)
+
+    t0_composite = t0_vis.blend(aoi_outline.visualize(palette=['yellow']))
+    t1_composite = t1_vis.blend(aoi_outline.visualize(palette=['yellow']))
+    
+    enc_overlay = encroachment.visualize(
+        min=0,
+        max=1,
+        palette=['orange']
+    )
+    enc_composite = t1_vis.blend(enc_overlay).blend(
+        aoi_outline.visualize(palette=['yellow'])
+    )
+
+    encroachment_composite = true_color2.visualize(**rgb_vis) \
+    .blend(enc_overlay) \
+    .blend(aoi_outline.visualize(palette=['yellow']))
+
+
+    t0_thumb = t0_composite.getThumbURL({
+    'dimensions': 1024,
+    'region': buffered_bounds,
+    'format': 'png'
+})
+
+    t1_thumb = t1_composite.getThumbURL({
+    'dimensions': 1024,
+    'region': buffered_bounds,
+    'format': 'png'
+})
+
+    encroach_thumb = enc_composite.getThumbURL({
+    'dimensions': 1024,
+    'region': buffered_bounds,
+    'format': 'png'
+})
 
     return {
         "encroachment_percent": round(percent, 2),
@@ -146,7 +196,8 @@ def analyze_area(lat, lon, radius, d1_start, d1_end, d2_start, d2_end, polygon=N
         "encroachment_tile": encroach_tile,
         "t0_thumb": t0_thumb,
         "t1_thumb": t1_thumb,
-        "encroach_thumb": encroach_thumb
+        "encroach_thumb": encroach_thumb,
+        "enc_overlay": enc_overlay
     }
 
 def get_thumbnail(image, area, palette=None):

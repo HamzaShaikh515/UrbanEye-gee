@@ -14,6 +14,7 @@ from typing import Dict, Optional
 
 from fastapi.responses import FileResponse
 import os
+from datetime import datetime
 
 from app.report_utils import download_and_save_image, generate_pdf_report
 
@@ -89,8 +90,16 @@ def analyze(request: AreaRequest):
     t1_path = download_and_save_image(result["t1_thumb"], folder, "t1.png")
     enc_path = download_and_save_image(result["encroach_thumb"], folder, "encroachment.png")
 
+    metadata = {
+        "date1_start": request.date1_start,
+        "date1_end": request.date1_end,
+        "date2_start": request.date2_start,
+        "date2_end": request.date2_end,
+        "generated_on": datetime.utcnow()
+    }
+
     # Generate PDF
-    pdf_path = generate_pdf_report(folder, result)
+    pdf_path = generate_pdf_report(folder, result, metadata)
 
     # Update DB with file paths
     db_result.report_path = pdf_path
