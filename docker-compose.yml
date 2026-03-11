@@ -1,0 +1,33 @@
+version: "3.9"
+
+services:
+
+  backend:
+    build: .
+    container_name: urbaneye_backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      - postgis
+    volumes:
+      - ./reports:/app/reports
+      - C:\\Users\\Nabil\\.config\\earthengine:/root/.config/earthengine
+    restart: always
+
+  postgis:
+    image: postgis/postgis:15-3.4
+    container_name: urbaneye_postgis
+    environment:
+      POSTGRES_DB: urbaneye_db
+      POSTGRES_USER: urbaneye
+      POSTGRES_PASSWORD: urbaneye123
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgis_data:/var/lib/postgresql/data
+    restart: always
+
+volumes:
+  postgis_data:
