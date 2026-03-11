@@ -37,7 +37,7 @@ docker run --name urbaneye-postgis \
   -e POSTGRES_PASSWORD=urbaneye123 \
   -e POSTGRES_DB=urbaneye_db \
   -p 5432:5432 \
-  -d postgis/postgis
+  -d postgis/postgis:15-3.4
 
 
 Verify container:
