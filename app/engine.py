@@ -1,28 +1,72 @@
+import json
+import logging
 import os
 
 import ee
 from dotenv import load_dotenv
 
-load_dotenv()
+# Only load .env in development (when GEE_PRIVATE_KEY is not already injected)
+_gee_private_key_raw = os.getenv("GEE_PRIVATE_KEY")
+if not _gee_private_key_raw:
+    load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Authentication via .env variables:
-#   GEE_PROJECT_ID        — GEE cloud project
-#   GEE_SERVICE_ACCOUNT   — service account email
-#   GEE_PRIVATE_KEY_PATH  — path to the JSON key file (relative to repo root)
+# Authentication
+#
+#   Production  → GEE_PRIVATE_KEY   : service-account JSON passed as a string
+#   Development → GEE_PRIVATE_KEY_PATH : path to the JSON key file
+#
+#   Both modes also require:
+#     GEE_PROJECT_ID      — GEE cloud project ID
+#     GEE_SERVICE_ACCOUNT — service account e-mail
 # ---------------------------------------------------------------------------
-_project    = os.getenv("GEE_PROJECT_ID")
-_sa_email   = os.getenv("GEE_SERVICE_ACCOUNT")
-_key_path   = os.getenv("GEE_PRIVATE_KEY_PATH", "secrets/gee-service-account.json")
+_project  = os.getenv("GEE_PROJECT_ID")
+_sa_email = os.getenv("GEE_SERVICE_ACCOUNT")
 
-# Resolve relative paths from the repo root (one level above this file)
-if not os.path.isabs(_key_path):
-    _key_path = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "..", _key_path)
-    )
+if not _project:
+    raise EnvironmentError("GEE_PROJECT_ID environment variable is not set.")
+if not _sa_email:
+    raise EnvironmentError("GEE_SERVICE_ACCOUNT environment variable is not set.")
 
-_credentials = ee.ServiceAccountCredentials(email=_sa_email, key_file=_key_path)
+_gee_private_key_raw = os.getenv("GEE_PRIVATE_KEY")
+
+if _gee_private_key_raw:
+    # --- Production: key material injected directly as a JSON string ---
+    logger.info("GEE auth: using GEE_PRIVATE_KEY (production mode)")
+    try:
+        _key_data = json.loads(_gee_private_key_raw)
+    except json.JSONDecodeError as exc:
+        raise EnvironmentError(
+            "GEE_PRIVATE_KEY is set but is not valid JSON."
+        ) from exc
+    _credentials = ee.ServiceAccountCredentials(_sa_email, key_data=_key_data)
+
+else:
+    # --- Development: key file loaded from disk ---
+    _key_path = os.getenv("GEE_PRIVATE_KEY_PATH")
+    if not _key_path:
+        raise EnvironmentError(
+            "Neither GEE_PRIVATE_KEY nor GEE_PRIVATE_KEY_PATH is set."
+        )
+
+    # Resolve relative paths from the repo root (one level above this file)
+    if not os.path.isabs(_key_path):
+        _key_path = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), "..", _key_path)
+        )
+
+    if not os.path.exists(_key_path):
+        raise FileNotFoundError(
+            f"GEE key file not found at resolved path: {_key_path}"
+        )
+
+    logger.info("GEE auth: using key file at %s (development mode)", _key_path)
+    _credentials = ee.ServiceAccountCredentials(_sa_email, key_file=_key_path)
+
 ee.Initialize(credentials=_credentials, project=_project)
+logger.info("Google Earth Engine initialised (project=%s)", _project)
 
 
 # ---------------------------------------------------------------------------
