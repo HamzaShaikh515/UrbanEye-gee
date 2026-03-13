@@ -13,7 +13,7 @@ services:
       - postgis
     volumes:
       - ./reports:/app/reports
-      - C:\\Users\\Nabil\\.config\\earthengine:/root/.config/earthengine
+      - ./secrets:/app/secrets:ro
     restart: always
 
   postgis:

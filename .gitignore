@@ -63,3 +63,6 @@ pgdata/
 
 # Reports
 reports/
+
+# Secrets
+secrets/

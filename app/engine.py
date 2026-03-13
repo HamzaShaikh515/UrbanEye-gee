@@ -1,109 +1,126 @@
-import ee
 import os
+
+import ee
 from dotenv import load_dotenv
 
 load_dotenv()
 
-GEE_PROJECT_ID = os.getenv("GEE_PROJECT_ID")
-ee.Initialize(project=GEE_PROJECT_ID)
+# ---------------------------------------------------------------------------
+# Authentication via .env variables:
+#   GEE_PROJECT_ID        — GEE cloud project
+#   GEE_SERVICE_ACCOUNT   — service account email
+#   GEE_PRIVATE_KEY_PATH  — path to the JSON key file (relative to repo root)
+# ---------------------------------------------------------------------------
+_project    = os.getenv("GEE_PROJECT_ID")
+_sa_email   = os.getenv("GEE_SERVICE_ACCOUNT")
+_key_path   = os.getenv("GEE_PRIVATE_KEY_PATH", "secrets/gee-service-account.json")
 
-def get_best_image(area, start_date, end_date):
+# Resolve relative paths from the repo root (one level above this file)
+if not os.path.isabs(_key_path):
+    _key_path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", _key_path)
+    )
 
+_credentials = ee.ServiceAccountCredentials(email=_sa_email, key_file=_key_path)
+ee.Initialize(credentials=_credentials, project=_project)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def get_best_image(area: ee.Geometry, start_date: str, end_date: str) -> ee.Image:
+    """Return the median of cloud-filtered Sentinel-2 SR images for the AOI."""
     collection = (
         ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
         .filterBounds(area)
         .filterDate(start_date, end_date)
-        .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 40))  # increase threshold
+        .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", 40))
     )
 
     count = collection.size().getInfo()
-
     if count == 0:
-        raise ValueError(f"No Sentinel-2 images found between {start_date} and {end_date}")
+        raise ValueError(
+            f"No Sentinel-2 images found between {start_date} and {end_date}."
+        )
 
     return collection.median()
 
 
-
-def calculate_ndvi(image):
-    return image.normalizedDifference(['B8', 'B4']).rename('NDVI')
-
-
-def calculate_ndbi(image):
-    return image.normalizedDifference(['B11', 'B8']).rename('NDBI')
+def calculate_ndvi(image: ee.Image) -> ee.Image:
+    return image.normalizedDifference(["B8", "B4"]).rename("NDVI")
 
 
-def analyze_area(lat, lon, radius, d1_start, d1_end, d2_start, d2_end, polygon=None):
+def calculate_ndbi(image: ee.Image) -> ee.Image:
+    return image.normalizedDifference(["B11", "B8"]).rename("NDBI")
 
-    # ----------------------------
-    # 1️⃣ Create AOI Geometry
-    # ----------------------------
+
+# ---------------------------------------------------------------------------
+# Main analysis
+# ---------------------------------------------------------------------------
+def analyze_area(
+    lat, lon, radius, d1_start, d1_end, d2_start, d2_end, polygon=None
+) -> dict:
+    # ------------------------------------------------------------------
+    # 1. Build AOI geometry
+    # ------------------------------------------------------------------
     if polygon is not None:
         if polygon.get("type") != "Polygon":
-            raise ValueError("Only Polygon type is supported")
-
-        coords = polygon["coordinates"]
-        area = ee.Geometry.Polygon(coords)
+            raise ValueError("Only GeoJSON Polygon type is supported.")
+        area = ee.Geometry.Polygon(polygon["coordinates"])
+    elif lat is not None and lon is not None:
+        area = ee.Geometry.Point([lon, lat]).buffer(radius)
     else:
-        point = ee.Geometry.Point([lon, lat])
-        area = point.buffer(radius)
-    
-    # ---------------------------
-    # Create square bounding box
-    # ---------------------------
-    bounds = area.bounds()
+        raise ValueError("Either polygon or lat/lon must be provided.")
 
-    # Add padding (meters)
-    buffered_bounds = bounds.buffer(500).bounds()
-    # ----------------------------
-    # 2️⃣ Get Images
-    # ----------------------------
+    # Padded bounding box used for thumbnail exports
+    buffered_bounds = area.bounds().buffer(500).bounds()
+
+    # ------------------------------------------------------------------
+    # 2. Fetch images
+    # ------------------------------------------------------------------
     image1 = get_best_image(area, d1_start, d1_end)
     image2 = get_best_image(area, d2_start, d2_end)
 
-    # ----------------------------
-    # 3️⃣ Calculate Indices
-    # ----------------------------
+    # ------------------------------------------------------------------
+    # 3. Spectral indices
+    # ------------------------------------------------------------------
     ndvi1 = calculate_ndvi(image1)
     ndvi2 = calculate_ndvi(image2)
-
     ndbi1 = calculate_ndbi(image1)
     ndbi2 = calculate_ndbi(image2)
 
     ndvi_change = ndvi2.subtract(ndvi1)
     ndbi_change = ndbi2.subtract(ndbi1)
 
-    # ----------------------------
-    # 4️⃣ Create Masks
-    # ----------------------------
-    veg_loss = ndvi_change.lt(-0.2)
-    builtup_gain = ndbi_change.gt(0.2)
-
+    # ------------------------------------------------------------------
+    # 4. Change masks
+    # ------------------------------------------------------------------
+    veg_loss      = ndvi_change.lt(-0.2)
+    builtup_gain  = ndbi_change.gt(0.2)
     encroachment_mask = veg_loss.And(builtup_gain)
 
-    # 🔥 IMPORTANT: Mask + Clip
-    veg_loss = veg_loss.updateMask(veg_loss).clip(area)
+    veg_loss     = veg_loss.updateMask(veg_loss).clip(area)
     builtup_gain = builtup_gain.updateMask(builtup_gain).clip(area)
     encroachment = encroachment_mask.updateMask(encroachment_mask).clip(area)
 
-    # ----------------------------
-    # 5️⃣ Area Calculation
-    # ----------------------------
+    # ------------------------------------------------------------------
+    # 5. Area statistics
+    # ------------------------------------------------------------------
     pixel_area = ee.Image.pixelArea()
 
     total_area = pixel_area.reduceRegion(
         reducer=ee.Reducer.sum(),
         geometry=area,
         scale=10,
-        maxPixels=1e10
-    ).getInfo()['area']
+        maxPixels=1e10,
+    ).getInfo()["area"]
 
     encroach_area = pixel_area.updateMask(encroachment).reduceRegion(
         reducer=ee.Reducer.sum(),
         geometry=area,
         scale=10,
-        maxPixels=1e10
-    ).getInfo()['area']
+        maxPixels=1e10,
+    ).getInfo()["area"]
 
     percent = (encroach_area / total_area) * 100 if total_area else 0
 
@@ -114,111 +131,54 @@ def analyze_area(lat, lon, radius, d1_start, d1_end, d2_start, d2_end, polygon=N
     else:
         risk = "High"
 
-    # ----------------------------
-    # 6️⃣ Generate Tile Layers
-    # ----------------------------
+    # ------------------------------------------------------------------
+    # 6. Tile layer URLs
+    # ------------------------------------------------------------------
     veg_loss_tile = veg_loss.getMapId(
-        {
-            'min': 0,
-            'max': 1,
-            'palette': ['red']
-        }
-    )['tile_fetcher'].url_format
+        {"min": 0, "max": 1, "palette": ["red"]}
+    )["tile_fetcher"].url_format
 
     builtup_tile = builtup_gain.getMapId(
-        {
-            'min': 0,
-            'max': 1,
-            'palette': ['purple']
-        }
-    )['tile_fetcher'].url_format
+        {"min": 0, "max": 1, "palette": ["purple"]}
+    )["tile_fetcher"].url_format
 
     encroach_tile = encroachment.getMapId(
-        {
-            'min': 0,
-            'max': 1,
-            'palette': ['orange']
-        }
-    )['tile_fetcher'].url_format
+        {"min": 0, "max": 1, "palette": ["orange"]}
+    )["tile_fetcher"].url_format
 
-    # True color images
-    true_color1 = image1.select(['B4', 'B3', 'B2']).clip(area)
-    true_color2 = image2.select(['B4', 'B3', 'B2']).clip(area)
-
-    rgb_vis = {
-        'min': 0,
-        'max': 3000
-    }
+    # ------------------------------------------------------------------
+    # 7. Thumbnail composites
+    # ------------------------------------------------------------------
+    rgb_vis = {"min": 0, "max": 3000}
 
     aoi_outline = ee.Image().byte().paint(
-        ee.FeatureCollection([ee.Feature(buffered_bounds)]),
-        1,
-        3
-    )
-    t0_vis = image1.select(['B4','B3','B2']).visualize(**rgb_vis)
-    t1_vis = image2.select(['B4','B3','B2']).visualize(**rgb_vis)
-
-    t0_composite = t0_vis.blend(aoi_outline.visualize(palette=['yellow']))
-    t1_composite = t1_vis.blend(aoi_outline.visualize(palette=['yellow']))
-    
-    enc_overlay = encroachment.visualize(
-        min=0,
-        max=1,
-        palette=['orange']
-    )
-    enc_composite = t1_vis.blend(enc_overlay).blend(
-        aoi_outline.visualize(palette=['yellow'])
+        ee.FeatureCollection([ee.Feature(buffered_bounds)]), 1, 3
     )
 
-    encroachment_composite = true_color2.visualize(**rgb_vis) \
-    .blend(enc_overlay) \
-    .blend(aoi_outline.visualize(palette=['yellow']))
+    t0_vis  = image1.select(["B4", "B3", "B2"]).visualize(**rgb_vis)
+    t1_vis  = image2.select(["B4", "B3", "B2"]).visualize(**rgb_vis)
+    enc_overlay = encroachment.visualize(min=0, max=1, palette=["orange"])
+    outline_vis = aoi_outline.visualize(palette=["yellow"])
 
+    t0_composite  = t0_vis.blend(outline_vis)
+    t1_composite  = t1_vis.blend(outline_vis)
+    enc_composite = t1_vis.blend(enc_overlay).blend(outline_vis)
 
-    t0_thumb = t0_composite.getThumbURL({
-    'dimensions': 1024,
-    'region': buffered_bounds,
-    'format': 'png'
-})
+    thumb_params = {"dimensions": 1024, "region": buffered_bounds, "format": "png"}
+    t0_thumb      = t0_composite.getThumbURL(thumb_params)
+    t1_thumb      = t1_composite.getThumbURL(thumb_params)
+    encroach_thumb = enc_composite.getThumbURL(thumb_params)
 
-    t1_thumb = t1_composite.getThumbURL({
-    'dimensions': 1024,
-    'region': buffered_bounds,
-    'format': 'png'
-})
-
-    encroach_thumb = enc_composite.getThumbURL({
-    'dimensions': 1024,
-    'region': buffered_bounds,
-    'format': 'png'
-})
-
+    # ------------------------------------------------------------------
+    # 8. Return serialisable result dict
+    # ------------------------------------------------------------------
     return {
-        "encroachment_percent": round(percent, 2),
-        "risk_level": risk,
-        "vegetation_loss_tile": veg_loss_tile,
-        "builtup_increase_tile": builtup_tile,
-        "encroachment_tile": encroach_tile,
-        "t0_thumb": t0_thumb,
-        "t1_thumb": t1_thumb,
-        "encroach_thumb": encroach_thumb,
-        "enc_overlay": enc_overlay
+        "encroachment_percent":   round(percent, 2),
+        "risk_level":             risk,
+        "vegetation_loss_tile":   veg_loss_tile,
+        "builtup_increase_tile":  builtup_tile,
+        "encroachment_tile":      encroach_tile,
+        "t0_thumb":               t0_thumb,
+        "t1_thumb":               t1_thumb,
+        "encroach_thumb":         encroach_thumb,
     }
-
-def get_thumbnail(image, area, palette=None):
-    vis_params = {
-        'min': 0,
-        'max': 3000,
-        'dimensions': 512,
-        'region': area
-    }
-
-    if palette:
-        vis_params.update({
-            'min': 0,
-            'max': 1,
-            'palette': palette
-        })
-
-    url = image.getThumbURL(vis_params)
-    return url
