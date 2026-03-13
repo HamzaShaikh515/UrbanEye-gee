@@ -36,12 +36,13 @@ if _gee_private_key_raw:
     # --- Production: key material injected directly as a JSON string ---
     logger.info("GEE auth: using GEE_PRIVATE_KEY (production mode)")
     try:
-        _key_data = json.loads(_gee_private_key_raw)
+        json.loads(_gee_private_key_raw)  # validate JSON before passing
     except json.JSONDecodeError as exc:
         raise EnvironmentError(
             "GEE_PRIVATE_KEY is set but is not valid JSON."
         ) from exc
-    _credentials = ee.ServiceAccountCredentials(_sa_email, key_data=_key_data)
+    # ee.ServiceAccountCredentials expects a raw JSON string, not a dict
+    _credentials = ee.ServiceAccountCredentials(_sa_email, key_data=_gee_private_key_raw)
 
 else:
     # --- Development: key file loaded from disk ---
